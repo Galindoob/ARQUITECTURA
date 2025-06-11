@@ -21,7 +21,7 @@ if not os.path.exists("procesados"):
     os.makedirs("procesados")                            # Crea la carpeta 'procesados' si no está creada
 
 # Recorrer todos los archivos .txt de la carpeta actual
-archivos_txt = [f for f in os.listdir() if f.endswith(".txt")]
+archivos_txt = [f for f in os.listdir() if os.path.isfile(f) and not f.endswith(".py") and f != "procesados"]
 
 for archivo in archivos_txt:
     print(f"\n📄 Procesando archivo: {archivo}")
