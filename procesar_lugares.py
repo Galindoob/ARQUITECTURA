@@ -1,81 +1,100 @@
-import os                          # Módulo para manejo de archivos y rutas
-import re                          # Módulo de expresiones regulares para extraer números o limpiar texto
-import uuid                        # Para generar identificadores únicos
-from pymongo import MongoClient    # Cliente para conectarse y trabajar con MongoDB
+import os
+import re
+import uuid
+import shutil
+from pymongo import MongoClient
 
 # Conexión a MongoDB local
-cliente = MongoClient("mongodb://localhost:27017")  # Se conecta al servidor MongoDB que corre en localhost
-db = cliente["almacenamiento"]                      # Se selecciona (o crea) la base de datos llamada "almacenamiento"
+cliente = MongoClient("mongodb://localhost:27017")
+db = cliente["almacenamiento"]
 
-# Definición de las colecciones en donde se dividirán los datos
-lugares_col = db["lugares"]                         # Tabla para almacenar los nombres de los lugares
-direcciones_col = db["direcciones"]                 # Tabla para almacenar información de dirección
-georeferencias_col = db["georeferencias"]           # Tabla para almacenar coordenadas geográficas
+# Colecciones a usar
+lugares_col = db["lugares"]
+direcciones_col = db["direcciones"]
+georeferencias_col = db["georeferencias"]
 
-# Archivo de entrada (debe estar en la misma carpeta que el script)
-archivo = "DATOS3.txt"
+# Crear carpeta "procesados" si no existe
+if not os.path.exists("procesados"):
+    os.makedirs("procesados")
 
-# Lectura del archivo, usando codificación latin-1 (compatible con caracteres especiales y acentos)
-# Se omite la primera línea (asumiendo que es un encabezado)
-with open(archivo, "r", encoding="latin-1") as file:
-    lineas = [line.strip() for line in file.readlines()[1:] if line.strip()]  # Elimina líneas vacías y espacios extra
+# Buscar todos los archivos .txt en la carpeta actual
+archivos_txt = [f for f in os.listdir() if f.endswith(".txt") and os.path.isfile(f)]
 
-# Procesar cada línea del archivo
-for linea in lineas:
+# Procesar cada archivo
+for archivo in archivos_txt:
+    print(f"\n📄 Procesando archivo: {archivo}")
+
+    # Verifica que el archivo tenga líneas con punto y coma (;) para asegurarse que es formato de lugares
     try:
-        # Separar la línea en nombre, dirección y georeferencia
-        nombre, direccion_completa, geo = linea.split(";")
-        nombre = nombre.strip()
-        direccion_completa = direccion_completa.strip()
-        geo = geo.strip()
+        with open(archivo, "r", encoding="latin-1") as file:
+            lineas_crudas = file.readlines()
+        if not any(";" in linea for linea in lineas_crudas):
+            print(f"⛔ Archivo ignorado por no tener formato de lugares: {archivo}")
+            continue
 
-        # Revisar si el lugar ya fue insertado previamente en la colección
-        if lugares_col.find_one({"nombre_lugar": nombre}):
-            print(f"⚠️ Ya existe: {nombre}")
-            continue  # Saltar al siguiente si ya existe
+        # Limpiar líneas y saltar encabezado
+        lineas = [line.strip() for line in lineas_crudas[1:] if line.strip()]
 
-        # Generar un identificador único para enlazar entre tablas
-        id_lugar = str(uuid.uuid4())
+        for linea in lineas:
+            try:
+                # Separar datos
+                nombre, direccion_completa, geo = linea.split(";")
+                nombre = nombre.strip()
+                direccion_completa = direccion_completa.strip()
+                geo = geo.strip()
 
-        # Insertar en la colección de Lugares
-        lugares_col.insert_one({
-            "id_lugar": id_lugar,
-            "nombre_lugar": nombre
-        })
+                # Verificar si ya existe
+                if lugares_col.find_one({"nombre_lugar": nombre}):
+                    print(f"⚠️ Ya existe: {nombre}")
+                    continue
 
-        # Procesar los componentes de la dirección
-        partes = direccion_completa.split(",")  # Separar por coma
-        if len(partes) >= 4:
-            nombre_calle = partes[0].strip()                                # Ej: "Av. Main Street 123"
-            numero_calle_match = re.search(r"\d+", nombre_calle)            # Buscar número dentro del string
-            numero_calle = numero_calle_match.group() if numero_calle_match else ""  # Si hay número, lo extrae
-            nombre_calle = re.sub(r"\d+", "", nombre_calle).strip()         # Remueve los dígitos del nombre de calle
-            ciudad_estado = partes[1].strip() + ", " + partes[2].strip()    # Combina ciudad y estado
-            pais = partes[3].strip()                                        # Toma el país
-        else:
-            # Si la dirección no tiene suficiente información, se dejan los campos vacíos
-            nombre_calle, numero_calle, ciudad_estado, pais = "", "", "", ""
+                # Crear ID único
+                id_lugar = str(uuid.uuid4())
 
-        # Insertar en la colección de Direcciones
-        direcciones_col.insert_one({
-            "id_lugar": id_lugar,
-            "nombre_calle": nombre_calle,
-            "numero_calle": numero_calle,
-            "ciudad_estado_provincia": ciudad_estado,
-            "pais": pais
-        })
+                # Insertar en colección Lugares
+                lugares_col.insert_one({
+                    "id_lugar": id_lugar,
+                    "nombre_lugar": nombre
+                })
 
-        # Procesar coordenadas geográficas (esperadas en formato: latitud,longitud)
-        lat, lon = map(str.strip, geo.split(","))  # Elimina espacios extra
-        georeferencias_col.insert_one({
-            "id_lugar": id_lugar,
-            "latitud": lat,
-            "longitud": lon
-        })
+                # Procesar dirección
+                partes = direccion_completa.split(",")
+                if len(partes) >= 4:
+                    nombre_calle = partes[0].strip()
+                    numero_match = re.search(r"\d+", nombre_calle)
+                    numero_calle = numero_match.group() if numero_match else ""
+                    nombre_calle = re.sub(r"\d+", "", nombre_calle).strip()
+                    ciudad_estado = partes[1].strip() + ", " + partes[2].strip()
+                    pais = partes[3].strip()
+                else:
+                    nombre_calle, numero_calle, ciudad_estado, pais = "", "", "", ""
 
-        print(f"✅ Insertado: {nombre}")  # Confirmación en consola
+                direcciones_col.insert_one({
+                    "id_lugar": id_lugar,
+                    "nombre_calle": nombre_calle,
+                    "numero_calle": numero_calle,
+                    "ciudad_estado_provincia": ciudad_estado,
+                    "pais": pais
+                })
+
+                # Procesar coordenadas
+                lat, lon = map(str.strip, geo.split(","))
+                georeferencias_col.insert_one({
+                    "id_lugar": id_lugar,
+                    "latitud": lat,
+                    "longitud": lon
+                })
+
+                print(f"✅ Insertado: {nombre}")
+
+            except Exception as e:
+                print(f"❌ Error en línea: {linea}")
+                print(f"   Detalle: {e}")
+
+        # Mover archivo procesado
+        shutil.move(archivo, os.path.join("procesados", archivo))
+        print(f"📁 Archivo movido a carpeta 'procesados/'")
 
     except Exception as e:
-        # Manejo de errores en caso de líneas mal formateadas
-        print(f"❌ Error en línea: {linea}")
+        print(f"❌ No se pudo procesar {archivo}")
         print(f"   Detalle: {e}")

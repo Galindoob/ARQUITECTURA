@@ -1,82 +1,87 @@
-import re                                # Módulo para trabajar con expresiones regulares (extracción de datos del texto)
-from datetime import datetime            # Para manejar fechas y convertirlas a un formato estándar
-from pymongo import MongoClient          # Cliente de MongoDB para conectar e insertar datos en la base
+import os
+import re
+from datetime import datetime
+from pymongo import MongoClient
+import shutil
 
-# Conexión a la base de datos local de MongoDB
-cliente = MongoClient('mongodb://localhost:27017')   # Dirección por defecto de un servidor local de MongoDB
-db = cliente['almacenamiento']                       # Se accede (o crea si no existe) la base de datos llamada "almacenamiento"
-coleccion = db['fnac_famosos_norm']                  # Se accede (o crea) la colección para guardar los registros normalizados
+# Conexión a MongoDB
+cliente = MongoClient('mongodb://localhost:27017')
+db = cliente['almacenamiento']
+coleccion = db['fnac_famosos_norm']
 
-# Ruta del archivo que contiene los datos a procesar
-archivo = "DATOS2.txt"
+# Crear carpeta "procesados" si no existe
+if not os.path.exists("procesados"):
+    os.makedirs("procesados")
 
-# Función para intentar convertir fechas comunes al formato chileno estándar DD/MM/AAAA
+# Función para convertir fechas estándar
 def normalizar_fecha(fecha_str):
-    formatos = [                                      # Lista de posibles formatos que puede tener la fecha en el archivo
-        "%Y/%m/%d", "%Y-%m-%d",                       # Año-Mes-Día con slash o guión
-        "%d/%m/%Y", "%d-%m-%Y",                       # Día-Mes-Año con slash o guión
-        "%d/%m/%y", "%d-%m-%y"                        # Día-Mes-Año corto (2 dígitos)
-    ]
+    formatos = ["%Y/%m/%d", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"]
     for fmt in formatos:
         try:
-            fecha = datetime.strptime(fecha_str, fmt)           # Intenta convertir la fecha al formato actual del bucle
-            return fecha.strftime("%d/%m/%Y")                   # Si tiene éxito, la devuelve en formato chileno
+            fecha = datetime.strptime(fecha_str, fmt)
+            return fecha.strftime("%d/%m/%Y")
         except ValueError:
-            continue                                            # Si falla, prueba el siguiente formato
-    return None                                                 # Si ningún formato funcionó, retorna None
+            continue
+    return None
 
-# Abrir el archivo de texto y leer todas las líneas
-with open(archivo, "r", encoding="utf-8") as file:
-    lineas = file.readlines()
+# Buscar todos los archivos .txt que no están en "procesados"
+archivos_txt = [f for f in os.listdir() if f.endswith(".txt") and os.path.isfile(f)]
 
-# Procesar cada línea del archivo
-for linea in lineas:
-    # Usar expresión regular para separar el nombre del personaje y su fecha
-    match = re.match(r"\d+\.\s*(.+?)\s*-\s*(.+)", linea.strip())
-    if match:
-        nombre = match.group(1).strip()             # Extraer y limpiar el nombre del personaje
-        fecha_raw = match.group(2).strip()          # Extraer y limpiar la fecha original
+for archivo in archivos_txt:
+    print(f"\n📄 Procesando archivo: {archivo}")
 
-        print(f"\n🟢 Nombre: {nombre} | Fecha original: {fecha_raw}")
+    try:
+        with open(archivo, "r", encoding="utf-8") as file:
+            lineas = file.readlines()
 
-        # Intentar normalizar la fecha
-        fecha_normalizada = normalizar_fecha(fecha_raw)
+        for linea in lineas:
+            linea = linea.strip()
 
-        if fecha_normalizada:
-            registro = f"{nombre} - {fecha_normalizada}"  # Formato final para insertar
-            if not coleccion.find_one({'registro': registro}):  # Verifica si ya existe el mismo registro
-                coleccion.insert_one({'registro': registro})     # Inserta si no existe
-                print(f"✅ Insertado en MongoDB: {registro}")
+            # Intentar separar por guion o por coma
+            match_guion = re.match(r"\d+\.\s*(.+?)\s*-\s*(.+)", linea)
+            match_simple = re.match(r"(.+?),\s*(.+)", linea)
+
+            if match_guion:
+                nombre = match_guion.group(1).strip()
+                fecha_raw = match_guion.group(2).strip()
+            elif match_simple:
+                nombre = match_simple.group(1).strip()
+                fecha_raw = match_simple.group(2).strip()
             else:
-                print(f"⚠️ Ya existe en MongoDB: {registro}")
-        else:
-            # Si no se pudo normalizar, tratar de extraer el año manualmente
-            anio = "????"                       # Año por defecto si no se puede detectar
-            sufijo = ""                        # Para guardar "a.C." o "d.C." si se detecta
+                print(f"❌ Línea no válida: {linea}")
+                continue
 
-            # Intentar encontrar un número de 2 a 4 cifras (ej: 69, 1028)
-            anio_match = re.search(r"(\d{2,4})", fecha_raw)
-            if anio_match:
-                anio = anio_match.group(1)
+            print(f"🟢 Nombre: {nombre} | Fecha original: {fecha_raw}")
 
-            # Revisar si la fecha contiene algún indicio de a.C. o d.C.
-            if 'a.C.' in fecha_raw or 'ac' in fecha_raw.lower():
-                sufijo = " a.C."                # Si detecta era antigua
-            elif 'd.C.' in fecha_raw or 'dc' in fecha_raw.lower():
-                sufijo = " d.C."                # Si detecta era después de Cristo
+            fecha_normalizada = normalizar_fecha(fecha_raw)
 
-            # Crear una fecha ficticia "00/00/AAAA" con sufijo si aplica
-            fecha_final = f"00/00/{anio}{sufijo}"
-            registro = f"{nombre} - {fecha_final}"
+            if fecha_normalizada:
+                registro = f"{nombre} - {fecha_normalizada}"
+            else:
+                # Buscar año y sufijo a.C. o d.C.
+                anio = "????"
+                sufijo = ""
+                anio_match = re.search(r"(\d{2,4})", fecha_raw)
+                if anio_match:
+                    anio = anio_match.group(1)
+                if 'a.C.' in fecha_raw or 'ac' in fecha_raw.lower():
+                    sufijo = " a.C."
+                elif 'd.C.' in fecha_raw or 'dc' in fecha_raw.lower():
+                    sufijo = " d.C."
+                fecha_normalizada = f"00/00/{anio}{sufijo}"
+                registro = f"{nombre} - {fecha_normalizada}"
+                print(f"⚠️ Fecha estimada usada: {fecha_normalizada}")
 
-            # Insertar si no existe
             if not coleccion.find_one({'registro': registro}):
                 coleccion.insert_one({'registro': registro})
-                print(f"⚠️ Fecha estimada usada: {fecha_final}")
                 print(f"✅ Insertado en MongoDB: {registro}")
             else:
                 print(f"⚠️ Ya existe en MongoDB: {registro}")
-    else:
-        # Si no se logró extraer nombre y fecha, mostrar advertencia
-        print(f"❌ Línea no reconocida: {linea.strip()}")
 
+        # Mover archivo a "procesados"
+        shutil.move(archivo, os.path.join("procesados", archivo))
+        print(f"📁 Archivo movido a carpeta 'procesados/'")
+
+    except Exception as e:
+        print(f"❌ Error al procesar archivo {archivo}")
+        print(f"   Detalle: {e}")
